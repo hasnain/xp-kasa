@@ -103,15 +103,20 @@ class Ocr
             $binary = self::tesseractBinary();
             $prefix = self::tessdataPrefix();
             // Env must come before timeout(1), otherwise timeout tries to exec "TESSDATA_PREFIX=...".
-            $env = $prefix !== '' ? 'TESSDATA_PREFIX=' . escapeshellarg($prefix) . ' ' : '';
+            // OMP_THREAD_LIMIT=1 stops OpenMP thrashing on small VPS (was 3+ minutes for a 1MP photo).
+            $envParts = ['OMP_THREAD_LIMIT=1'];
+            if ($prefix !== '') {
+                $envParts[] = 'TESSDATA_PREFIX=' . escapeshellarg($prefix);
+            }
+            $env = implode(' ', $envParts) . ' ';
 
-            // Single pass only. Hard-cap runtime so PHP-FPM never waits 3 minutes.
-            $timeout = self::timeoutPrefix(40);
+            // Background job can wait longer than Cloudflare; still hard-cap hung processes.
+            $timeout = self::timeoutPrefix(90);
             $command = $env . $timeout . escapeshellarg($binary) . ' ' . escapeshellarg($workPath)
                 . ' stdout -l pol+eng --oem 1 --psm 6'
                 . ' -c tessedit_do_invert=0'
                 . ' tsv';
-            $output = self::run($command);
+            $output = self::run($command, 95);
             $tokens = self::tokensFromTsv($output);
             if (!$tokens) {
                 throw new RuntimeException('No text was found on the receipt.');
@@ -140,11 +145,11 @@ class Ocr
 
         $width = (int) $info[0];
         $height = (int) $info[1];
-        $maxWidth = 800;
+        $maxWidth = 700;
         $fileSize = @filesize($imagePath) ?: 0;
 
         // Already small enough — skip GD work.
-        if ($width <= $maxWidth && $fileSize > 0 && $fileSize < 400000) {
+        if ($width <= $maxWidth && $fileSize > 0 && $fileSize < 250000) {
             return $imagePath;
         }
 
@@ -268,7 +273,7 @@ class Ocr
         return $tokens;
     }
 
-    private static function run(string $command): string
+    private static function run(string $command, int $deadlineSeconds = 95): string
     {
         $descriptors = [
             1 => ['pipe', 'w'],
@@ -284,7 +289,7 @@ class Ocr
 
         $stdout = '';
         $stderr = '';
-        $deadline = microtime(true) + 45;
+        $deadline = microtime(true) + max(5, $deadlineSeconds);
         while (true) {
             $status = proc_get_status($process);
             $stdout .= stream_get_contents($pipes[1]);

@@ -73,7 +73,7 @@ header('Content-Type: text/html; charset=UTF-8');
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>XPunch return protocol</title>
-    <link rel="stylesheet" href="assets/app.css">
+    <link rel="stylesheet" href="assets/app.css?v=<?= (int) @filemtime(__DIR__ . '/assets/app.css') ?>">
 </head>
 <body>
 <div class="wrap">
@@ -109,7 +109,7 @@ function render_login(string $error = ''): void
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Login — XPunch return protocol</title>
-    <link rel="stylesheet" href="assets/app.css">
+    <link rel="stylesheet" href="assets/app.css?v=<?= (int) @filemtime(__DIR__ . '/assets/app.css') ?>">
 </head>
 <body>
 <div class="wrap login-wrap">

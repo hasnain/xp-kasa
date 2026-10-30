@@ -41,11 +41,26 @@ class ReceiptParser
         $draft = self::readHeader($textLines, $draft);
         $draft['items'] = self::readItems($textLines, $draft['rates']);
 
-        if ($draft['gross'] <= 0) {
-            foreach ($draft['items'] as $item) {
-                $draft['gross'] += $item['value'];
+        $itemsGross = 0.0;
+        foreach ($draft['items'] as $item) {
+            $itemsGross += $item['value'];
+        }
+        $itemsGross = round($itemsGross, 2);
+        $ratesGross = 0.0;
+        foreach ($draft['rates'] as $rate) {
+            if (isset($rate['gross']) && $rate['gross'] !== null) {
+                $ratesGross += (float) $rate['gross'];
             }
-            $draft['gross'] = round($draft['gross'], 2);
+        }
+        $ratesGross = round($ratesGross, 2);
+
+        // Prefer OPODATK / item totals when SUMA PLN was OCR-garbled (e.g. 37 instead of 57).
+        if ($draft['gross'] <= 0) {
+            $draft['gross'] = $ratesGross > 0 ? $ratesGross : $itemsGross;
+        } elseif ($ratesGross > 0 && abs($draft['gross'] - $ratesGross) > 0.05) {
+            $draft['gross'] = $ratesGross;
+        } elseif ($itemsGross > 0 && abs($draft['gross'] - $itemsGross) > 0.05 && $ratesGross <= 0) {
+            $draft['gross'] = $itemsGross;
         }
         if ($draft['vat'] <= 0 && $draft['gross'] > 0 && count($draft['rates']) === 1) {
             $only = reset($draft['rates']);
@@ -172,6 +187,7 @@ class ReceiptParser
     private static function cleanProductName(string $name): string
     {
         $name = preg_replace('/\b(?:Dostav[ae]|Dostaua)\b/iu', 'Dostawa', $name);
+        $name = preg_replace('/\b(?:[Zl]estau|[Zz]estau)\b/iu', 'Zestaw', $name);
         // Drop a price fragment that OCR glued onto the product name.
         $name = preg_replace('/\s+\d+(?:[.,]\d+)?\s*s?zt\.?\s*[x×X].*$/u', '', $name);
         // OCR often turns XP-1701 into X0-1/01 or similar.
@@ -245,15 +261,21 @@ class ReceiptParser
         $line = preg_replace('/^(para)\b/iu', '1 para', $line);
         // Common OCR mistakes for "1szt."
         $line = preg_replace('/\b15\s*zt\.?/iu', '1szt.', $line);
+        $line = preg_replace('/\b[tlis]\s*szt\.?/iu', '1szt.', $line);
         $line = preg_replace('/\biszt\.?/iu', '1szt.', $line);
+        $line = preg_replace('/\btszt\.?/iu', '1szt.', $line);
         $line = preg_replace('/\b[Il]\s*szt\.?/iu', '1szt.', $line);
         $line = preg_replace('/\b(\d+)\s*zt\.?/iu', '$1szt.', $line);
         // Tesseract often reads the multiply sign as « » ‹ › ¥ * or /
         $line = preg_replace('/\s*[x×XхХ«»‹›¥\*]\s*/u', ' x', $line);
         $line = preg_replace('/\sx\/(?=\d)/u', ' x', $line);
-        // VAT letter misread as a digit stuck to the amount (15,008 → 15,00B, 77,408 → 77,40B).
+        // Digits inside money amounts misread as letters: 57,G0 → 57,00
+        $line = preg_replace('/(\d[.,])[OoQG](\d)/u', '${1}0$2', $line);
+        $line = preg_replace('/(\d[.,]\d)[OoQG](?=\D|$)/u', '${1}0', $line);
+        // VAT letter misread as a digit/letter stuck to the amount.
         $line = preg_replace('/([.,]\d{2})([88])\s*$/u', '$1B', $line);
         $line = preg_replace('/([.,]\d{2})([44])\s*$/u', '$1A', $line);
+        $line = preg_replace('/([.,]\d{2})R\s*$/u', '$1A', $line);
         return trim($line);
     }
 

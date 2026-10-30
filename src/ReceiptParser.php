@@ -188,14 +188,20 @@ class ReceiptParser
     {
         $name = preg_replace('/\b(?:Dostav[ae]|Dostaua)\b/iu', 'Dostawa', $name);
         $name = preg_replace('/\b(?:[Zl]estau|[Zz]estau)\b/iu', 'Zestaw', $name);
+        // Copy printouts often truncate "Rękawice" to "Reka."
+        $name = preg_replace('/^Reka\.?\s*/iu', 'Rękawice ', $name);
         // Drop a price fragment that OCR glued onto the product name.
         $name = preg_replace('/\s+\d+(?:[.,]\d+)?\s*s?zt\.?\s*[x×X].*$/u', '', $name);
+        $name = preg_replace('/\s+\d+(?:[.,]\d+)?\s*para\s*[x×X].*$/iu', '', $name);
         // OCR often turns XP-1701 into X0-1/01 or similar.
         $name = preg_replace('/\bX[O0]-?1\/01\b/iu', 'XP-1701', $name);
         $name = preg_replace('/\bX[O0]-1701\b/iu', 'XP-1701', $name);
         $name = preg_replace('/\bXHRAP\b/iu', 'XWRAP', $name);
         $name = preg_replace('/\bREO\b/', 'RED', $name);
         $name = preg_replace('/\b(\d+)0Z\b/u', '$1OZ', $name);
+        $name = preg_replace('/\b(\d+)60Z\b/u', '$16OZ', $name);
+        $name = preg_replace('/\b(XP-\d+)-60Z\b/iu', '$1-6OZ', $name);
+        $name = preg_replace('/\b(XP-\d+)-602\b/iu', '$1-6OZ', $name);
         return trim($name);
     }
 
@@ -326,7 +332,7 @@ class ReceiptParser
         if (preg_match('/PARAGON|FISKALNY|NIP\b|SUMA|PTU|SPRZED|OPODATK|ROZLICZ|PRZELEW|KIEROWNIK|GOTOW|KARTA/iu', $line)) {
             return true;
         }
-        if (preg_match('/NUMER\s+DOKUMENTU|RODZAJ\s+DOKUMENTU|NUMER\s+KASY|OZNACZENIE\s+KASJERA|DATA\s+I\s+CZAS|PODPIS\s+CYFROWY|NUMER\s+UNIKATOWY|CHRONIONEJ|WYDRUK|PAMI[EĘ]CI/iu', $line)) {
+        if (preg_match('/NUMER\s+DOKUMENTU|RODZAJ\s+DOKUMENTU|NUMER\s+KASY|OZNACZENIE\s+KASJERA|DATA\s+I\s+CZAS|PODPIS\s+CYFROWY|NUMER\s+UNIKATOWY|NUMER\s+UNTKATONY|CHRONIONEJ|HYDRUK|WYDRUK|PAMI[EĘ]CI/iu', $line)) {
             return true;
         }
         if (preg_match('/SP\.\s*Z\s*O\.O|XPUNCH/iu', $line)) {

@@ -118,6 +118,20 @@ class Ocr
                 . ' tsv';
             $output = self::run($command, 95);
             $tokens = self::tokensFromTsv($output);
+
+            // Copy printouts sometimes need a different page segmentation mode.
+            if (count($tokens) < 5 || !self::tsvLooksLikeReceipt($output)) {
+                $command = $env . $timeout . escapeshellarg($binary) . ' ' . escapeshellarg($workPath)
+                    . ' stdout -l pol+eng --oem 1 --psm 4'
+                    . ' -c tessedit_do_invert=0'
+                    . ' tsv';
+                $output2 = self::run($command, 95);
+                $tokens2 = self::tokensFromTsv($output2);
+                if (count($tokens2) > count($tokens)) {
+                    $tokens = $tokens2;
+                }
+            }
+
             if (!$tokens) {
                 throw new RuntimeException('No text was found on the receipt.');
             }
@@ -174,8 +188,8 @@ class Ocr
         $newHeight = (int) max(1, round($height * ($newWidth / $width)));
         $dst = imagecreatetruecolor($newWidth, $newHeight);
         imagecopyresampled($dst, $src, 0, 0, 0, 0, $newWidth, $newHeight, $width, $height);
+        // Grayscale only — heavy contrast hurts copy printouts (WYDRUK DANYCH…).
         imagefilter($dst, IMG_FILTER_GRAYSCALE);
-        imagefilter($dst, IMG_FILTER_CONTRAST, -15);
 
         $tmpDir = storage_path('tmp');
         if (!is_dir($tmpDir)) {
@@ -187,6 +201,11 @@ class Ocr
         imagedestroy($dst);
 
         return is_file($out) ? $out : $imagePath;
+    }
+
+    private static function tsvLooksLikeReceipt(string $tsv): bool
+    {
+        return (bool) preg_match('/(?:para|szt|SUMA|PTU|OPODATK|DOKUMENTU|PARAGON)/iu', $tsv);
     }
 
     private static function timeoutPrefix(int $seconds): string

@@ -4,18 +4,20 @@ class Ocr
 {
     public static function read(string $imagePath): array
     {
-        $socketTokens = self::readSocket($imagePath);
-        if (count($socketTokens) >= 3) {
-            return $socketTokens;
-        }
-
-        try {
-            $tokens = self::readVision($imagePath);
-            if (count($tokens) >= 3) {
-                return $tokens;
+        // Mac-only fast path. On Linux servers skip straight to Tesseract.
+        if (is_file(app_path('bin/ocr')) || is_file('/tmp/xpunch-ocr.sock')) {
+            $socketTokens = self::readSocket($imagePath);
+            if (count($socketTokens) >= 3) {
+                return $socketTokens;
             }
-        } catch (Throwable $exception) {
-            // Direct reading works in a terminal. The page uses the background reader.
+            try {
+                $tokens = self::readVision($imagePath);
+                if (count($tokens) >= 3) {
+                    return $tokens;
+                }
+            } catch (Throwable $exception) {
+                // Fall through to Tesseract.
+            }
         }
 
         return self::readTesseract($imagePath);
@@ -23,7 +25,10 @@ class Ocr
 
     private static function readSocket(string $imagePath): array
     {
-        $socket = @fsockopen('unix:///tmp/xpunch-ocr.sock', 0, $errno, $errstr, 2);
+        if (!is_file('/tmp/xpunch-ocr.sock')) {
+            return [];
+        }
+        $socket = @fsockopen('unix:///tmp/xpunch-ocr.sock', 0, $errno, $errstr, 1);
         if (!$socket) {
             return [];
         }
@@ -91,26 +96,89 @@ class Ocr
 
     private static function readTesseract(string $imagePath): array
     {
-        $binary = self::tesseractBinary();
-        $prefix = self::tessdataPrefix();
-        $env = $prefix !== '' ? 'TESSDATA_PREFIX=' . escapeshellarg($prefix) . ' ' : '';
+        $workPath = self::prepareImageForOcr($imagePath);
+        $cleanup = $workPath !== $imagePath;
 
-        $command = $env . escapeshellarg($binary) . ' ' . escapeshellarg($imagePath)
-            . ' stdout -l pol+eng --psm 6 tsv';
-        $output = self::run($command);
-        $tokens = self::tokensFromTsv($output);
-        if (count($tokens) >= 3) {
+        try {
+            $binary = self::tesseractBinary();
+            $prefix = self::tessdataPrefix();
+            $env = $prefix !== '' ? 'TESSDATA_PREFIX=' . escapeshellarg($prefix) . ' ' : '';
+
+            // One fast pass first. Large receipts timeout under Cloudflare if we OCR twice.
+            $command = $env . escapeshellarg($binary) . ' ' . escapeshellarg($workPath)
+                . ' stdout -l pol+eng --oem 1 --psm 6 tsv';
+            $output = self::run($command);
+            $tokens = self::tokensFromTsv($output);
+            if (count($tokens) >= 3) {
+                return $tokens;
+            }
+
+            $command = $env . escapeshellarg($binary) . ' ' . escapeshellarg($workPath)
+                . ' stdout -l pol+eng --oem 1 --psm 4 tsv';
+            $output = self::run($command);
+            $tokens = self::tokensFromTsv($output);
+            if (!$tokens) {
+                throw new RuntimeException('No text was found on the receipt.');
+            }
             return $tokens;
+        } finally {
+            if ($cleanup && is_file($workPath)) {
+                @unlink($workPath);
+            }
+        }
+    }
+
+    /**
+     * Shrink big phone photos before Tesseract. Keeps the original for the PDF.
+     */
+    private static function prepareImageForOcr(string $imagePath): string
+    {
+        if (!function_exists('imagecreatefromjpeg')) {
+            return $imagePath;
         }
 
-        $command = $env . escapeshellarg($binary) . ' ' . escapeshellarg($imagePath)
-            . ' stdout -l pol+eng --psm 4 tsv';
-        $output = self::run($command);
-        $tokens = self::tokensFromTsv($output);
-        if (!$tokens) {
-            throw new RuntimeException('No text was found on the receipt.');
+        $info = @getimagesize($imagePath);
+        if (!$info || empty($info[0]) || empty($info[1])) {
+            return $imagePath;
         }
-        return $tokens;
+
+        $width = (int) $info[0];
+        $height = (int) $info[1];
+        $maxWidth = 1200;
+        if ($width <= $maxWidth) {
+            return $imagePath;
+        }
+
+        switch ($info[2]) {
+            case IMAGETYPE_JPEG:
+                $src = @imagecreatefromjpeg($imagePath);
+                break;
+            case IMAGETYPE_PNG:
+                $src = @imagecreatefrompng($imagePath);
+                break;
+            case IMAGETYPE_WEBP:
+                $src = function_exists('imagecreatefromwebp') ? @imagecreatefromwebp($imagePath) : false;
+                break;
+            default:
+                return $imagePath;
+        }
+        if (!$src) {
+            return $imagePath;
+        }
+
+        $newWidth = $maxWidth;
+        $newHeight = (int) round($height * ($newWidth / $width));
+        $dst = imagecreatetruecolor($newWidth, $newHeight);
+        imagecopyresampled($dst, $src, 0, 0, 0, 0, $newWidth, $newHeight, $width, $height);
+        imagefilter($dst, IMG_FILTER_GRAYSCALE);
+        imagefilter($dst, IMG_FILTER_CONTRAST, -15);
+
+        $out = storage_path('tmp/ocr-' . bin2hex(random_bytes(8)) . '.jpg');
+        imagejpeg($dst, $out, 85);
+        imagedestroy($src);
+        imagedestroy($dst);
+
+        return is_file($out) ? $out : $imagePath;
     }
 
     private static function tesseractBinary(): string

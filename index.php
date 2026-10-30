@@ -493,16 +493,26 @@ function stream_receipt_image(): void
 function render_upload(): void
 {
     ?>
-    <form class="card" method="post" enctype="multipart/form-data">
+    <form class="card" method="post" enctype="multipart/form-data" id="upload-form">
         <input type="hidden" name="action" value="upload">
         <label class="field" style="max-width:520px;">
             Receipt photo or PDF
             <input type="file" name="receipt" accept=".jpg,.jpeg,.png,.webp,.pdf,.heic,image/*,application/pdf" required>
         </label>
+        <p class="note" id="upload-note" hidden>Reading the receipt… this can take a few seconds.</p>
         <div class="actions">
-            <button type="submit">Read receipt</button>
+            <button type="submit" id="upload-btn">Read receipt</button>
         </div>
     </form>
+    <script>
+    document.getElementById('upload-form').addEventListener('submit', function () {
+        var btn = document.getElementById('upload-btn');
+        var note = document.getElementById('upload-note');
+        btn.disabled = true;
+        btn.textContent = 'Reading…';
+        note.hidden = false;
+    });
+    </script>
     <?php
 }
 

@@ -225,8 +225,9 @@ function start_ocr_job(string $jobId): void
 {
     $php = cli_php_binary();
     $script = app_path('bin/ocr_job.php');
-    $cmd = escapeshellarg($php) . ' ' . escapeshellarg($script) . ' ' . escapeshellarg($jobId)
-        . ' > /dev/null 2>&1 &';
+    $log = storage_path('tmp/ocr-job.log');
+    $cmd = 'nohup ' . escapeshellarg($php) . ' ' . escapeshellarg($script) . ' ' . escapeshellarg($jobId)
+        . ' >> ' . escapeshellarg($log) . ' 2>&1 &';
     exec($cmd);
 }
 

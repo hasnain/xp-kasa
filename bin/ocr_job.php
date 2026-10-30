@@ -54,6 +54,11 @@ try {
     $job['warning'] = 'The photo could not be read automatically. Type the lines below. The photo will still be placed on the PDF.';
     $job['error'] = $exception->getMessage();
     $job['updated_at'] = time();
+    @file_put_contents(
+        storage_path('tmp/ocr-last-error.log'),
+        date('c') . ' job=' . $jobId . ' ' . $exception->getMessage() . "\n",
+        FILE_APPEND
+    );
 }
 
 file_put_contents($jobFile, json_encode($job));

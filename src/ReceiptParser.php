@@ -186,9 +186,14 @@ class ReceiptParser
     private static function matchPrice(string $line): ?array
     {
         $line = self::normalizePriceLine($line);
+        // qty [unit] x unit_price value [VAT letter]
         $pattern = '/^(.*?)(\d+(?:[.,]\d+)?)\s*(s?zt\.?|sztuk[ai]?|para|kg|kpl|op\.?|opak\.?)?\s*[x×]\s*(\d{1,7}(?:[ ]\d{3})*[.,]\d{2})\s+(\d{1,7}(?:[ ]\d{3})*[.,]\d{2})\s*([A-G])?\s*$/iu';
         if (!preg_match($pattern, $line, $match)) {
-            return null;
+            // Fallback: qty unit_price valueLETTER with no clear "x"
+            $pattern = '/^(.*?)(\d+(?:[.,]\d+)?)\s*(s?zt\.?|sztuk[ai]?|para|kg|kpl|op\.?|opak\.?)?\s+(\d{1,7}(?:[ ]\d{3})*[.,]\d{2})\s+(\d{1,7}(?:[ ]\d{3})*[.,]\d{2})\s*([A-G])\s*$/iu';
+            if (!preg_match($pattern, $line, $match)) {
+                return null;
+            }
         }
         $qty = money_to_float($match[2]);
         $unitPrice = money_to_float($match[4]);
@@ -203,8 +208,19 @@ class ReceiptParser
         // When quantity is 1, unit price and line total should match. Prefer the unit price.
         if ($qty > 0 && abs($qty - 1.0) < 0.001 && $unitPrice > 0 && abs($unitPrice - $value) > 0.02) {
             $value = $unitPrice;
-        } elseif ($qty > 0 && $unitPrice > 0 && abs(round($qty * $unitPrice, 2) - $value) > 0.05) {
-            $value = round($qty * $unitPrice, 2);
+        } elseif ($qty > 0 && $unitPrice > 0 && $value > 0 && abs(round($qty * $unitPrice, 2) - $value) > 0.05) {
+            // Prefer reconstructing unit price from the line total when OCR mangled the middle amount
+            // (e.g. "2 para x/1,40 142,80" → unit should be 71,40).
+            $derived = round($value / $qty, 2);
+            if ($derived > 1 && abs(round($qty * $derived, 2) - $value) < 0.02) {
+                $unitPrice = $derived;
+            } else {
+                $value = round($qty * $unitPrice, 2);
+            }
+        }
+        $letter = strtoupper((string) ($match[6] ?? ''));
+        if ($letter !== '' && !preg_match('/^[A-G]$/', $letter)) {
+            $letter = '';
         }
         return [
             'name' => trim($match[1]),
@@ -212,20 +228,32 @@ class ReceiptParser
             'unit' => self::unitLabel($match[3] ?? ''),
             'unit_price' => $unitPrice,
             'value' => $value,
-            'letter' => strtoupper((string) ($match[6] ?? '')),
+            'letter' => $letter,
         ];
     }
 
     private static function normalizePriceLine(string $line): string
     {
         $line = self::normalize($line);
+        // Strip OCR junk brackets glued to quantity.
+        $line = preg_replace('/^[\{\[\(]+/u', '', $line);
+        $line = preg_replace('/\s+[\{\[\(]+(?=\d|para|szt)/iu', ' ', $line);
         // OCR often turns "para" into Cyrillic lookalikes: paгa, рага, etc.
         $line = preg_replace('/\bp[aа][rгp][aа]\b/iu', 'para', $line);
+        // "2para" / bare "para x..." → explicit quantity + unit
+        $line = preg_replace('/\b(\d+)\s*para\b/iu', '$1 para', $line);
+        $line = preg_replace('/^(para)\b/iu', '1 para', $line);
         // Common OCR mistakes for "1szt."
         $line = preg_replace('/\b15\s*zt\.?/iu', '1szt.', $line);
+        $line = preg_replace('/\biszt\.?/iu', '1szt.', $line);
         $line = preg_replace('/\b[Il]\s*szt\.?/iu', '1szt.', $line);
         $line = preg_replace('/\b(\d+)\s*zt\.?/iu', '$1szt.', $line);
-        $line = preg_replace('/\s*[x×XхХ]\s*/u', ' x', $line);
+        // Tesseract often reads the multiply sign as « » ‹ › ¥ * or /
+        $line = preg_replace('/\s*[x×XхХ«»‹›¥\*]\s*/u', ' x', $line);
+        $line = preg_replace('/\sx\/(?=\d)/u', ' x', $line);
+        // VAT letter misread as a digit stuck to the amount (15,008 → 15,00B, 77,408 → 77,40B).
+        $line = preg_replace('/([.,]\d{2})([88])\s*$/u', '$1B', $line);
+        $line = preg_replace('/([.,]\d{2})([44])\s*$/u', '$1A', $line);
         return trim($line);
     }
 
@@ -345,7 +373,8 @@ class ReceiptParser
             'т' => 't', 'в' => 'b', 'н' => 'h',
         ];
         $text = strtr($text, $map);
-        $text = preg_replace('/(\d),\s+(\d{2})\b/u', '$1,$2', $text);
+        // Space inside money amounts; avoid \b because "40A" has no boundary before A.
+        $text = preg_replace('/(\d),\s+(\d{2})(?=\D|$)/u', '$1,$2', $text);
         $text = preg_replace('/\s+/u', ' ', $text);
         return trim($text);
     }

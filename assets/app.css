@@ -96,6 +96,7 @@ label.field {
 }
 
 input[type="text"],
+input[type="password"],
 input[type="date"],
 input[type="file"],
 select,
@@ -107,6 +108,7 @@ textarea {
   border-radius: 8px;
   padding: 8px 10px;
   width: 100%;
+  box-sizing: border-box;
 }
 
 textarea { min-height: 64px; resize: vertical; }

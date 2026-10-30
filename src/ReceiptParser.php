@@ -209,6 +209,11 @@ class ReceiptParser
             && preg_match('/\d+[.,]\d{2}/', $line)) {
             return true;
         }
+        // "{ 29,00 29,00A" / "29,00 29,00A"
+        if (preg_match('/^\s*(\d+[.,]\d{2})\s+(\d+[.,]\d{2})\s*[A-G]?\s*$/u', $line, $m)) {
+            return abs(money_to_float($m[1]) - money_to_float($m[2])) < 0.02
+                || money_to_float($m[2]) >= money_to_float($m[1]);
+        }
         return false;
     }
 
@@ -225,6 +230,7 @@ class ReceiptParser
         $name = preg_replace('/^Ochr,\s*/iu', 'Ochr. ', $name);
         // Drop a price fragment that OCR glued onto / into the product name.
         $name = preg_replace('/^[\{\[\(]*(?:\d+)?\s*(?:s?zt\.?|para)\s*[x×X].*?\d+[.,]\d{2}\s*[A-G0-9]?\s*/iu', '', $name);
+        $name = preg_replace('/\s+[\{\[\(]?\s*\d+[.,]\d{2}\s+\d+[.,]\d{2}\s*[A-G]?\b\s*/u', ' ', $name);
         $name = preg_replace('/\s+\d+(?:[.,]\d+)?\s*s?zt\.?\s*[x×X].*$/u', '', $name);
         $name = preg_replace('/\s+\d+(?:[.,]\d+)?\s*para\s*[x×X].*$/iu', '', $name);
         // OCR often turns XP-1701 into X0-1/01 or similar.
@@ -244,18 +250,57 @@ class ReceiptParser
     private static function matchPrice(string $line): ?array
     {
         $line = self::normalizePriceLine($line);
+        $match = null;
+        $qty = 0.0;
+        $unitRaw = '';
+        $namePrefix = '';
+        $unitPrice = 0.0;
+        $value = 0.0;
+        $letter = '';
+
         // qty [unit] x unit_price value [VAT letter]
         $pattern = '/^(.*?)(\d+(?:[.,]\d+)?)\s*(s?zt\.?|sztuk[ai]?|para|kg|kpl|op\.?|opak\.?)?\s*[x×]\s*(\d{1,7}(?:[ ]\d{3})*[.,]\d{2})\s+(\d{1,7}(?:[ ]\d{3})*[.,]\d{2})\s*([A-G])?\s*$/iu';
-        if (!preg_match($pattern, $line, $match)) {
+        if (preg_match($pattern, $line, $match)) {
+            $namePrefix = trim($match[1]);
+            $qty = money_to_float($match[2]);
+            $unitRaw = $match[3] ?? '';
+            $unitPrice = money_to_float($match[4]);
+            $value = money_to_float($match[5]);
+            $letter = strtoupper((string) ($match[6] ?? ''));
+        } else {
             // Fallback: qty unit_price valueLETTER with no clear "x"
             $pattern = '/^(.*?)(\d+(?:[.,]\d+)?)\s*(s?zt\.?|sztuk[ai]?|para|kg|kpl|op\.?|opak\.?)?\s+(\d{1,7}(?:[ ]\d{3})*[.,]\d{2})\s+(\d{1,7}(?:[ ]\d{3})*[.,]\d{2})\s*([A-G])\s*$/iu';
-            if (!preg_match($pattern, $line, $match)) {
-                return null;
+            if (preg_match($pattern, $line, $match)) {
+                $namePrefix = trim($match[1]);
+                $qty = money_to_float($match[2]);
+                $unitRaw = $match[3] ?? '';
+                $unitPrice = money_to_float($match[4]);
+                $value = money_to_float($match[5]);
+                $letter = strtoupper((string) ($match[6] ?? ''));
+            } else {
+                // Server OCR often drops qty/x: "{ 29,00 29,00A" or "29,00 29,00A"
+                $pattern = '/^(.*?)(\d{1,7}(?:[ ]\d{3})*[.,]\d{2})\s+(\d{1,7}(?:[ ]\d{3})*[.,]\d{2})\s*([A-G])?\s*$/iu';
+                if (!preg_match($pattern, $line, $match)) {
+                    return null;
+                }
+                $namePrefix = trim($match[1]);
+                $unitPrice = money_to_float($match[2]);
+                $value = money_to_float($match[3]);
+                $letter = strtoupper((string) ($match[4] ?? ''));
+                // Only accept when the two amounts look like a unit price + line total.
+                if ($unitPrice <= 0 || $value <= 0) {
+                    return null;
+                }
+                if (abs($unitPrice - $value) < 0.02) {
+                    $qty = 1.0;
+                } elseif ($unitPrice > 0 && $value >= $unitPrice && fmod($value * 100, $unitPrice * 100) < 1) {
+                    $qty = round($value / $unitPrice, 3);
+                } else {
+                    return null;
+                }
             }
         }
-        $qty = money_to_float($match[2]);
-        $unitPrice = money_to_float($match[4]);
-        $value = money_to_float($match[5]);
+
         if ($value <= 0 && $qty > 0 && $unitPrice > 0) {
             $value = round($qty * $unitPrice, 2);
         }
@@ -276,14 +321,13 @@ class ReceiptParser
                 $value = round($qty * $unitPrice, 2);
             }
         }
-        $letter = strtoupper((string) ($match[6] ?? ''));
         if ($letter !== '' && !preg_match('/^[A-G]$/', $letter)) {
             $letter = '';
         }
         return [
-            'name' => trim($match[1]),
+            'name' => $namePrefix,
             'qty' => $qty,
-            'unit' => self::unitLabel($match[3] ?? ''),
+            'unit' => self::unitLabel($unitRaw),
             'unit_price' => $unitPrice,
             'value' => $value,
             'letter' => $letter,

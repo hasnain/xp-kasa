@@ -4,9 +4,35 @@ session_start();
 
 require __DIR__ . '/vendor/autoload.php';
 require __DIR__ . '/src/bootstrap.php';
+require __DIR__ . '/src/Auth.php';
 require __DIR__ . '/src/Ocr.php';
 require __DIR__ . '/src/ReceiptParser.php';
 require __DIR__ . '/src/ProtocolPdf.php';
+
+$error = '';
+
+if (isset($_GET['logout']) || (($_POST['action'] ?? '') === 'logout')) {
+    cleanup_session_draft();
+    Auth::logout();
+    header('Location: index.php');
+    exit;
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'login') {
+    $user = trim((string) ($_POST['username'] ?? ''));
+    $pass = (string) ($_POST['password'] ?? '');
+    if (Auth::attempt($user, $pass)) {
+        header('Location: index.php');
+        exit;
+    }
+    $error = 'Wrong username or password.';
+}
+
+if (!Auth::check()) {
+    header('Content-Type: text/html; charset=UTF-8');
+    render_login($error);
+    exit;
+}
 
 if (isset($_GET['image'])) {
     stream_receipt_image();
@@ -18,7 +44,6 @@ if (isset($_GET['new'])) {
     exit;
 }
 
-$error = '';
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
     if ($action === 'upload') {
@@ -52,8 +77,16 @@ header('Content-Type: text/html; charset=UTF-8');
 </head>
 <body>
 <div class="wrap">
-    <h1>Return protocol</h1>
-    <p class="lede">Upload a receipt photo. Check the products, tick what was returned or cancelled, then download the PDF for the accountant.</p>
+    <div class="topbar">
+        <div>
+            <h1>Return protocol</h1>
+            <p class="lede">Upload a receipt photo. Check the products, tick what was returned or cancelled, then download the PDF for the accountant.</p>
+        </div>
+        <div class="topbar-user">
+            <span><?= e(Auth::user()) ?></span>
+            <a class="button secondary small" href="index.php?logout=1">Log out</a>
+        </div>
+    </div>
     <?php if ($error !== ''): ?>
         <p class="error"><?= e($error) ?></p>
     <?php endif; ?>
@@ -66,6 +99,42 @@ header('Content-Type: text/html; charset=UTF-8');
 </body>
 </html>
 <?php
+
+function render_login(string $error = ''): void
+{
+    ?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Login — XPunch return protocol</title>
+    <link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+<div class="wrap login-wrap">
+    <h1>Return protocol</h1>
+    <p class="lede">Sign in to create return protocols.</p>
+    <?php if ($error !== ''): ?>
+        <p class="error"><?= e($error) ?></p>
+    <?php endif; ?>
+    <form class="card login-card" method="post">
+        <input type="hidden" name="action" value="login">
+        <label class="field">Username
+            <input type="text" name="username" autocomplete="username" required autofocus>
+        </label>
+        <label class="field">Password
+            <input type="password" name="password" autocomplete="current-password" required>
+        </label>
+        <div class="actions">
+            <button type="submit">Log in</button>
+        </div>
+    </form>
+</div>
+</body>
+</html>
+    <?php
+}
 
 function handle_upload(): void
 {

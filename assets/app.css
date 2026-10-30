@@ -23,6 +23,36 @@ body {
   padding: 28px 20px 64px;
 }
 
+.login-wrap {
+  max-width: 420px;
+}
+
+.login-card .field {
+  margin-bottom: 12px;
+}
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+  margin-bottom: 8px;
+}
+
+.topbar-user {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  color: var(--muted);
+  white-space: nowrap;
+  padding-top: 6px;
+}
+
+.button.small {
+  padding: 6px 10px;
+  font-size: 13px;
+}
+
 h1 {
   font-size: 26px;
   line-height: 1.2;

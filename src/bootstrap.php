@@ -2,6 +2,29 @@
 
 const DEFAULT_EVIDENCE_NO = '2025/000112830';
 
+load_env_file(dirname(__DIR__) . '/.env');
+
+function load_env_file(string $path): void
+{
+    if (!is_file($path) || !is_readable($path)) {
+        return;
+    }
+    foreach (file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line) {
+        $line = trim($line);
+        if ($line === '' || $line[0] === '#' || strpos($line, '=') === false) {
+            continue;
+        }
+        list($name, $value) = explode('=', $line, 2);
+        $name = trim($name);
+        $value = trim($value, " \t\"'");
+        if ($name === '' || getenv($name) !== false) {
+            continue;
+        }
+        putenv($name . '=' . $value);
+        $_ENV[$name] = $value;
+    }
+}
+
 function app_path(string $path = ''): string
 {
     $root = dirname(__DIR__);

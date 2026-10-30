@@ -194,30 +194,32 @@ function handle_upload(): void
     }
 
     $image = normalize_upload($dest, $mime);
-    $jobId = bin2hex(random_bytes(16));
-    $jobFile = storage_path('tmp/job-' . $jobId . '.json');
-    $job = [
-        'id' => $jobId,
-        'status' => 'queued',
-        'image' => $image,
-        'parsed' => null,
-        'warning' => '',
-        'created_at' => time(),
-        'updated_at' => time(),
-    ];
-    if (file_put_contents($jobFile, json_encode($job)) === false) {
-        throw new RuntimeException('Could not start receipt reading.');
-    }
 
-    start_ocr_job($jobId);
+    // Sync OCR is fine now (~3s with OMP_THREAD_LIMIT=1). Background jobs were
+    // failing silently on the server and left the review form empty.
+    $warning = '';
+    try {
+        set_time_limit(120);
+        $tokens = Ocr::read($image);
+        $parsed = ReceiptParser::parseTokens($tokens);
+        if (!$parsed['items']) {
+            $warning = 'No product lines were read. Add them below. The photo will still be placed on the PDF.';
+        }
+    } catch (Throwable $exception) {
+        $parsed = ReceiptParser::emptyDraft();
+        $warning = 'The photo could not be read automatically. Type the lines below. The photo will still be placed on the PDF.';
+        @file_put_contents(
+            storage_path('tmp/ocr-last-error.log'),
+            date('c') . ' upload ' . $exception->getMessage() . "\n",
+            FILE_APPEND
+        );
+    }
 
     $_SESSION['draft'] = [
         'image' => $image,
-        'warning' => '',
-        'parsed' => ReceiptParser::emptyDraft(),
+        'warning' => $warning,
+        'parsed' => $parsed,
         'form' => null,
-        'ocr_job_id' => $jobId,
-        'ocr_status' => 'queued',
     ];
 }
 
@@ -622,7 +624,7 @@ function render_upload(): void
             Receipt photo or PDF
             <input type="file" name="receipt" accept=".jpg,.jpeg,.png,.webp,.pdf,.heic,image/*,application/pdf" required>
         </label>
-        <p class="note" id="upload-note" hidden>Uploading… reading starts in the background.</p>
+        <p class="note" id="upload-note" hidden>Reading the receipt… usually a few seconds.</p>
         <div class="actions">
             <button type="submit" id="upload-btn">Read receipt</button>
         </div>
@@ -632,7 +634,7 @@ function render_upload(): void
         var btn = document.getElementById('upload-btn');
         var note = document.getElementById('upload-note');
         btn.disabled = true;
-        btn.textContent = 'Uploading…';
+        btn.textContent = 'Reading…';
         note.hidden = false;
     });
     </script>

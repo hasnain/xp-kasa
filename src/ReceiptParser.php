@@ -54,13 +54,24 @@ class ReceiptParser
         }
         $ratesGross = round($ratesGross, 2);
 
-        // Prefer OPODATK / item totals when SUMA PLN was OCR-garbled (e.g. 37 instead of 57).
-        if ($draft['gross'] <= 0) {
-            $draft['gross'] = $ratesGross > 0 ? $ratesGross : $itemsGross;
-        } elseif ($ratesGross > 0 && abs($draft['gross'] - $ratesGross) > 0.05) {
-            $draft['gross'] = $ratesGross;
-        } elseif ($itemsGross > 0 && abs($draft['gross'] - $itemsGross) > 0.05 && $ratesGross <= 0) {
-            $draft['gross'] = $itemsGross;
+        // Choose the total closest to the sum of line items (OPODATK is often OCR'd wrong, e.g. 17 vs 77).
+        if ($itemsGross > 0) {
+            $suma = (float) $draft['gross'];
+            $candidates = array_filter([$suma, $ratesGross, $itemsGross], function ($v) {
+                return $v > 0;
+            });
+            $best = $itemsGross;
+            $bestDiff = PHP_FLOAT_MAX;
+            foreach ($candidates as $candidate) {
+                $diff = abs($candidate - $itemsGross);
+                if ($diff < $bestDiff) {
+                    $bestDiff = $diff;
+                    $best = $candidate;
+                }
+            }
+            $draft['gross'] = round($best, 2);
+        } elseif ($draft['gross'] <= 0) {
+            $draft['gross'] = $ratesGross > 0 ? $ratesGross : 0.0;
         }
         if ($draft['vat'] <= 0 && $draft['gross'] > 0 && count($draft['rates']) === 1) {
             $only = reset($draft['rates']);
@@ -95,7 +106,7 @@ class ReceiptParser
                     $draft['date'] = sprintf('%04d-%02d-%02d', $match[3], $match[2], $match[1]);
                 }
             }
-            if (preg_match('/E+AP\s*([0-9]{8,16})/i', $line, $match)) {
+            if (preg_match('/E[AE]P\s*([0-9]{8,16})/i', $line, $match)) {
                 $draft['unique_no'] = 'EAP' . $match[1];
             }
             if (preg_match('/\b(20\d{2}\/\d{6,12})\b/', $line, $match)) {
@@ -121,10 +132,10 @@ class ReceiptParser
                     $rates[$letter]['vat'] = 0.0;
                 }
             }
-            if (preg_match('/SUMA\s+PLN\s+([\d\s]+[.,]\d{2})/iu', $line, $match)) {
+            if (preg_match('/SU[MH]A\s+PLN\s+([\d\s]+[.,]\d{2})/iu', $line, $match)) {
                 $draft['gross'] = money_to_float($match[1]);
             }
-            if (preg_match('/SUMA\s+PTU\s+([\d\s]+[.,]\d{2})/iu', $line, $match)) {
+            if (preg_match('/SU[MH]A\s+PTU\s+([\d\s]+[.,]\d{2})/iu', $line, $match)) {
                 $draft['vat'] = money_to_float($match[1]);
             }
         }

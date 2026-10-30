@@ -223,11 +223,15 @@ class ReceiptParser
         $name = preg_replace('/^(?:RODZAJ|NUMER)\s+DOKU[A-Z]*ENTU\s*:?\s*(?:PF|P[EF])?\s*/iu', '', $name);
         $name = preg_replace('/^NIP\s*:?\s*\d+\s*/iu', '', $name);
         $name = preg_replace('/\b(?:Dostav[ae]|Dostaua)\b/iu', 'Dostawa', $name);
-        $name = preg_replace('/\b(?:[Zl]estau|[Zz]estau)\b/iu', 'Zestaw', $name);
+        $name = preg_replace('/\b(?:[Zl]estau|[Zz]estau|[Zz]estaw)\b/iu', 'Zestaw', $name);
         // Copy printouts often truncate "Rękawice" to "Reka."
         $name = preg_replace('/^Reka\.?\s*/iu', 'Rękawice ', $name);
-        $name = preg_replace('/^[fF]?\(?\s*chr\./iu', 'Ochr.', $name);
+        $name = preg_replace('/^[fFQ]?\(?\s*chr\./iu', 'Ochr.', $name);
+        $name = preg_replace('/^[QO]chraniacze\b/iu', 'Ochraniacze', $name);
         $name = preg_replace('/^Ochr,\s*/iu', 'Ochr. ', $name);
+        $name = preg_replace('/\bZELONE\b/iu', 'ŻELOWE', $name);
+        $name = preg_replace('/\bBANDAZE\b/iu', 'BANDAŻE', $name);
+        $name = rtrim($name, " \tx×X");
         // Drop a price fragment that OCR glued onto / into the product name.
         $name = preg_replace('/^[\{\[\(]*(?:\d+)?\s*(?:s?zt\.?|para)\s*[x×X].*?\d+[.,]\d{2}\s*[A-G0-9]?\s*/iu', '', $name);
         $name = preg_replace('/\s+[\{\[\(]?\s*\d+[.,]\d{2}\s+\d+[.,]\d{2}\s*[A-G]?\b\s*/u', ' ', $name);
@@ -278,25 +282,36 @@ class ReceiptParser
                 $value = money_to_float($match[5]);
                 $letter = strtoupper((string) ($match[6] ?? ''));
             } else {
-                // Server OCR often drops qty/x: "{ 29,00 29,00A" or "29,00 29,00A"
-                $pattern = '/^(.*?)(\d{1,7}(?:[ ]\d{3})*[.,]\d{2})\s+(\d{1,7}(?:[ ]\d{3})*[.,]\d{2})\s*([A-G])?\s*$/iu';
-                if (!preg_match($pattern, $line, $match)) {
-                    return null;
-                }
-                $namePrefix = trim($match[1]);
-                $unitPrice = money_to_float($match[2]);
-                $value = money_to_float($match[3]);
-                $letter = strtoupper((string) ($match[4] ?? ''));
-                // Only accept when the two amounts look like a unit price + line total.
-                if ($unitPrice <= 0 || $value <= 0) {
-                    return null;
-                }
-                if (abs($unitPrice - $value) < 0.02) {
-                    $qty = 1.0;
-                } elseif ($unitPrice > 0 && $value >= $unitPrice && fmod($value * 100, $unitPrice * 100) < 1) {
-                    $qty = round($value / $unitPrice, 3);
+                // Single amount: "1 szt. x 57,00" / "1szt. x57,00A" (OCR dropped the line total).
+                $pattern = '/^(.*?)(\d+(?:[.,]\d+)?)\s*(s?zt\.?|sztuk[ai]?|para|kg|kpl|op\.?|opak\.?)?\s*[x×]\s*(\d{1,7}(?:[ ]\d{3})*[.,]\d{2})\s*([A-G])?\s*$/iu';
+                if (preg_match($pattern, $line, $match)) {
+                    $namePrefix = trim($match[1]);
+                    $qty = money_to_float($match[2]);
+                    $unitRaw = $match[3] ?? '';
+                    $unitPrice = money_to_float($match[4]);
+                    $value = $unitPrice;
+                    $letter = strtoupper((string) ($match[5] ?? ''));
                 } else {
-                    return null;
+                    // Server OCR often drops qty/x: "{ 29,00 29,00A" or "29,00 29,00A"
+                    $pattern = '/^(.*?)(\d{1,7}(?:[ ]\d{3})*[.,]\d{2})\s+(\d{1,7}(?:[ ]\d{3})*[.,]\d{2})\s*([A-G])?\s*$/iu';
+                    if (!preg_match($pattern, $line, $match)) {
+                        return null;
+                    }
+                    $namePrefix = trim($match[1]);
+                    $unitPrice = money_to_float($match[2]);
+                    $value = money_to_float($match[3]);
+                    $letter = strtoupper((string) ($match[4] ?? ''));
+                    // Only accept when the two amounts look like a unit price + line total.
+                    if ($unitPrice <= 0 || $value <= 0) {
+                        return null;
+                    }
+                    if (abs($unitPrice - $value) < 0.02) {
+                        $qty = 1.0;
+                    } elseif ($unitPrice > 0 && $value >= $unitPrice && fmod($value * 100, $unitPrice * 100) < 1) {
+                        $qty = round($value / $unitPrice, 3);
+                    } else {
+                        return null;
+                    }
                 }
             }
         }

@@ -102,11 +102,12 @@ class Ocr
         try {
             $binary = self::tesseractBinary();
             $prefix = self::tessdataPrefix();
+            // Env must come before timeout(1), otherwise timeout tries to exec "TESSDATA_PREFIX=...".
             $env = $prefix !== '' ? 'TESSDATA_PREFIX=' . escapeshellarg($prefix) . ' ' : '';
 
             // Single pass only. Hard-cap runtime so PHP-FPM never waits 3 minutes.
             $timeout = self::timeoutPrefix(40);
-            $command = $timeout . $env . escapeshellarg($binary) . ' ' . escapeshellarg($workPath)
+            $command = $env . $timeout . escapeshellarg($binary) . ' ' . escapeshellarg($workPath)
                 . ' stdout -l pol+eng --oem 1 --psm 6'
                 . ' -c tessedit_do_invert=0'
                 . ' tsv';

@@ -102,13 +102,22 @@ input[type="file"],
 select,
 textarea {
   font: inherit;
+  font-size: 15px;
+  line-height: 1.45;
   color: var(--ink);
   background: #fff;
   border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 8px 10px;
+  padding: 10px 12px;
+  min-height: 42px;
   width: 100%;
   box-sizing: border-box;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+input[type="password"] {
+  font-family: inherit;
 }
 
 textarea { min-height: 64px; resize: vertical; }

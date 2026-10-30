@@ -91,13 +91,11 @@ class Ocr
 
     private static function readTesseract(string $imagePath): array
     {
-        $binary = '/opt/homebrew/bin/tesseract';
-        if (!is_file($binary)) {
-            $binary = 'tesseract';
-        }
+        $binary = self::tesseractBinary();
+        $prefix = self::tessdataPrefix();
+        $env = $prefix !== '' ? 'TESSDATA_PREFIX=' . escapeshellarg($prefix) . ' ' : '';
 
-        $command = 'TESSDATA_PREFIX=/opt/homebrew/share/tessdata '
-            . escapeshellarg($binary) . ' ' . escapeshellarg($imagePath)
+        $command = $env . escapeshellarg($binary) . ' ' . escapeshellarg($imagePath)
             . ' stdout -l pol+eng --psm 6 tsv';
         $output = self::run($command);
         $tokens = self::tokensFromTsv($output);
@@ -105,8 +103,7 @@ class Ocr
             return $tokens;
         }
 
-        $command = 'TESSDATA_PREFIX=/opt/homebrew/share/tessdata '
-            . escapeshellarg($binary) . ' ' . escapeshellarg($imagePath)
+        $command = $env . escapeshellarg($binary) . ' ' . escapeshellarg($imagePath)
             . ' stdout -l pol+eng --psm 4 tsv';
         $output = self::run($command);
         $tokens = self::tokensFromTsv($output);
@@ -114,6 +111,32 @@ class Ocr
             throw new RuntimeException('No text was found on the receipt.');
         }
         return $tokens;
+    }
+
+    private static function tesseractBinary(): string
+    {
+        foreach (['/opt/homebrew/bin/tesseract', '/usr/bin/tesseract', 'tesseract'] as $binary) {
+            if ($binary === 'tesseract' || is_file($binary)) {
+                return $binary;
+            }
+        }
+        return 'tesseract';
+    }
+
+    private static function tessdataPrefix(): string
+    {
+        $candidates = [
+            '/opt/homebrew/share/tessdata',
+            '/usr/share/tesseract-ocr/5/tessdata',
+            '/usr/share/tesseract-ocr/4.00/tessdata',
+            '/usr/share/tessdata',
+        ];
+        foreach ($candidates as $path) {
+            if (is_dir($path)) {
+                return $path;
+            }
+        }
+        return '';
     }
 
     private static function tokensFromTsv(string $tsv): array

@@ -9,9 +9,10 @@ if (PHP_SAPI !== 'cli') {
     exit(1);
 }
 
-$jobId = $argv[1] ?? '';
+$cliArgs = $_SERVER['argv'] ?? ($GLOBALS['argv'] ?? []);
+$jobId = $cliArgs[1] ?? '';
 if (!preg_match('/^[a-f0-9]{16,64}$/', $jobId)) {
-    fwrite(STDERR, "bad job id\n");
+    fwrite(STDERR, "bad job id: " . $jobId . "\n");
     exit(1);
 }
 

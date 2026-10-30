@@ -9,9 +9,11 @@ if (PHP_SAPI !== 'cli') {
     exit(1);
 }
 
-$path = $argv[1] ?? '';
+$cliArgs = $_SERVER['argv'] ?? ($GLOBALS['argv'] ?? []);
+$path = $cliArgs[1] ?? '';
 if ($path === '' || !is_file($path)) {
     fwrite(STDERR, "Usage: php bin/ocr_test.php /path/to/receipt.jpg\n");
+    fwrite(STDERR, "Got path: " . ($path === '' ? '(empty)' : $path) . "\n");
     exit(1);
 }
 

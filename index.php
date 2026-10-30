@@ -226,7 +226,9 @@ function start_ocr_job(string $jobId): void
     $php = cli_php_binary();
     $script = app_path('bin/ocr_job.php');
     $log = storage_path('tmp/ocr-job.log');
-    $cmd = 'nohup ' . escapeshellarg($php) . ' ' . escapeshellarg($script) . ' ' . escapeshellarg($jobId)
+    // Force argv: some PHP builds ship with register_argc_argv=Off.
+    $cmd = 'nohup ' . escapeshellarg($php) . ' -d register_argc_argv=1 '
+        . escapeshellarg($script) . ' ' . escapeshellarg($jobId)
         . ' >> ' . escapeshellarg($log) . ' 2>&1 &';
     exec($cmd);
 }

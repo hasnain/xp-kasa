@@ -4,8 +4,8 @@ class Ocr
 {
     public static function read(string $imagePath): array
     {
-        // Mac-only fast path. On Linux servers skip straight to Tesseract.
-        if (is_file(app_path('bin/ocr')) || is_file('/tmp/xpunch-ocr.sock')) {
+        // Mac-only fast path. Linux servers go straight to Tesseract.
+        if (PHP_OS_FAMILY === 'Darwin') {
             $socketTokens = self::readSocket($imagePath);
             if (count($socketTokens) >= 3) {
                 return $socketTokens;
@@ -104,17 +104,12 @@ class Ocr
             $prefix = self::tessdataPrefix();
             $env = $prefix !== '' ? 'TESSDATA_PREFIX=' . escapeshellarg($prefix) . ' ' : '';
 
-            // One fast pass first. Large receipts timeout under Cloudflare if we OCR twice.
-            $command = $env . escapeshellarg($binary) . ' ' . escapeshellarg($workPath)
-                . ' stdout -l pol+eng --oem 1 --psm 6 tsv';
-            $output = self::run($command);
-            $tokens = self::tokensFromTsv($output);
-            if (count($tokens) >= 3) {
-                return $tokens;
-            }
-
-            $command = $env . escapeshellarg($binary) . ' ' . escapeshellarg($workPath)
-                . ' stdout -l pol+eng --oem 1 --psm 4 tsv';
+            // Single pass only. Hard-cap runtime so PHP-FPM never waits 3 minutes.
+            $timeout = self::timeoutPrefix(40);
+            $command = $timeout . $env . escapeshellarg($binary) . ' ' . escapeshellarg($workPath)
+                . ' stdout -l pol+eng --oem 1 --psm 6'
+                . ' -c tessedit_do_invert=0'
+                . ' tsv';
             $output = self::run($command);
             $tokens = self::tokensFromTsv($output);
             if (!$tokens) {
@@ -129,7 +124,7 @@ class Ocr
     }
 
     /**
-     * Shrink big phone photos before Tesseract. Keeps the original for the PDF.
+     * Shrink phone photos before Tesseract. Keeps the original for the PDF.
      */
     private static function prepareImageForOcr(string $imagePath): string
     {
@@ -144,8 +139,11 @@ class Ocr
 
         $width = (int) $info[0];
         $height = (int) $info[1];
-        $maxWidth = 1200;
-        if ($width <= $maxWidth) {
+        $maxWidth = 800;
+        $fileSize = @filesize($imagePath) ?: 0;
+
+        // Already small enough — skip GD work.
+        if ($width <= $maxWidth && $fileSize > 0 && $fileSize < 400000) {
             return $imagePath;
         }
 
@@ -166,19 +164,37 @@ class Ocr
             return $imagePath;
         }
 
-        $newWidth = $maxWidth;
-        $newHeight = (int) round($height * ($newWidth / $width));
+        $newWidth = min($width, $maxWidth);
+        $newHeight = (int) max(1, round($height * ($newWidth / $width)));
         $dst = imagecreatetruecolor($newWidth, $newHeight);
         imagecopyresampled($dst, $src, 0, 0, 0, 0, $newWidth, $newHeight, $width, $height);
         imagefilter($dst, IMG_FILTER_GRAYSCALE);
         imagefilter($dst, IMG_FILTER_CONTRAST, -15);
 
-        $out = storage_path('tmp/ocr-' . bin2hex(random_bytes(8)) . '.jpg');
-        imagejpeg($dst, $out, 85);
+        $tmpDir = storage_path('tmp');
+        if (!is_dir($tmpDir)) {
+            @mkdir($tmpDir, 0777, true);
+        }
+        $out = $tmpDir . '/ocr-' . bin2hex(random_bytes(8)) . '.jpg';
+        imagejpeg($dst, $out, 65);
         imagedestroy($src);
         imagedestroy($dst);
 
         return is_file($out) ? $out : $imagePath;
+    }
+
+    private static function timeoutPrefix(int $seconds): string
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            return '';
+        }
+        // Prefer coreutils timeout so a hung Tesseract cannot pin PHP-FPM.
+        foreach (['/usr/bin/timeout', '/bin/timeout'] as $bin) {
+            if (is_file($bin) && is_executable($bin)) {
+                return escapeshellarg($bin) . ' ' . (int) $seconds . ' ';
+            }
+        }
+        return '';
     }
 
     private static function tesseractBinary(): string
@@ -261,15 +277,44 @@ class Ocr
         if (!is_resource($process)) {
             throw new RuntimeException('Could not start the receipt reader.');
         }
-        $stdout = stream_get_contents($pipes[1]);
-        $stderr = stream_get_contents($pipes[2]);
+
+        stream_set_blocking($pipes[1], false);
+        stream_set_blocking($pipes[2], false);
+
+        $stdout = '';
+        $stderr = '';
+        $deadline = microtime(true) + 45;
+        while (true) {
+            $status = proc_get_status($process);
+            $stdout .= stream_get_contents($pipes[1]);
+            $stderr .= stream_get_contents($pipes[2]);
+            if (!$status['running']) {
+                break;
+            }
+            if (microtime(true) >= $deadline) {
+                proc_terminate($process, 9);
+                fclose($pipes[1]);
+                fclose($pipes[2]);
+                proc_close($process);
+                throw new RuntimeException('Receipt reading timed out.');
+            }
+            usleep(50000);
+        }
+
+        $stdout .= stream_get_contents($pipes[1]);
+        $stderr .= stream_get_contents($pipes[2]);
         fclose($pipes[1]);
         fclose($pipes[2]);
         $code = proc_close($process);
-        if ($code !== 0 && trim((string) $stdout) === '') {
-            $detail = trim((string) $stderr);
+
+        // timeout(1) exits 124 when the command is killed.
+        if (($code !== 0 && $code !== 124) && trim($stdout) === '') {
+            $detail = trim($stderr);
             throw new RuntimeException($detail !== '' ? $detail : 'Receipt reader failed.');
         }
-        return (string) $stdout;
+        if ($code === 124 && trim($stdout) === '') {
+            throw new RuntimeException('Receipt reading timed out.');
+        }
+        return $stdout;
     }
 }

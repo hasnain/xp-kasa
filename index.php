@@ -44,6 +44,10 @@ if (isset($_GET['new'])) {
     exit;
 }
 
+if (isset($_GET['ocr_status'])) {
+    respond_ocr_status();
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
     if ($action === 'upload') {
@@ -65,6 +69,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 $draft = $_SESSION['draft'] ?? null;
+if (is_array($draft) && !empty($draft['ocr_job_id'])) {
+    apply_finished_ocr_job($draft);
+    $draft = $_SESSION['draft'] ?? $draft;
+}
 header('Content-Type: text/html; charset=UTF-8');
 ?>
 <!DOCTYPE html>
@@ -164,6 +172,10 @@ function handle_upload(): void
     if (!is_dir($dir) && !mkdir($dir, 0777, true) && !is_dir($dir)) {
         throw new RuntimeException('Could not store the receipt.');
     }
+    $tmpDir = storage_path('tmp');
+    if (!is_dir($tmpDir) && !mkdir($tmpDir, 0777, true) && !is_dir($tmpDir)) {
+        throw new RuntimeException('Could not store the receipt.');
+    }
 
     $name = bin2hex(random_bytes(16)) . '.' . $allowed[$mime];
     $dest = $dir . '/' . $name;
@@ -176,27 +188,135 @@ function handle_upload(): void
     if ($previous !== '') {
         delete_upload_files($previous);
     }
+    $previousJob = $_SESSION['draft']['ocr_job_id'] ?? '';
+    if ($previousJob !== '') {
+        @unlink(storage_path('tmp/job-' . $previousJob . '.json'));
+    }
 
     $image = normalize_upload($dest, $mime);
-    $warning = '';
-    try {
-        set_time_limit(120);
-        $tokens = Ocr::read($image);
-        $parsed = ReceiptParser::parseTokens($tokens);
-        if (!$parsed['items']) {
-            $warning = 'No product lines were read. Add them below. The photo will still be placed on the PDF.';
-        }
-    } catch (Throwable $exception) {
-        $parsed = ReceiptParser::emptyDraft();
-        $warning = 'The photo could not be read automatically. Type the lines below. The photo will still be placed on the PDF.';
+    $jobId = bin2hex(random_bytes(16));
+    $jobFile = storage_path('tmp/job-' . $jobId . '.json');
+    $job = [
+        'id' => $jobId,
+        'status' => 'queued',
+        'image' => $image,
+        'parsed' => null,
+        'warning' => '',
+        'created_at' => time(),
+        'updated_at' => time(),
+    ];
+    if (file_put_contents($jobFile, json_encode($job)) === false) {
+        throw new RuntimeException('Could not start receipt reading.');
     }
+
+    start_ocr_job($jobId);
 
     $_SESSION['draft'] = [
         'image' => $image,
-        'warning' => $warning,
-        'parsed' => $parsed,
+        'warning' => '',
+        'parsed' => ReceiptParser::emptyDraft(),
         'form' => null,
+        'ocr_job_id' => $jobId,
+        'ocr_status' => 'queued',
     ];
+}
+
+function start_ocr_job(string $jobId): void
+{
+    $php = cli_php_binary();
+    $script = app_path('bin/ocr_job.php');
+    $cmd = escapeshellarg($php) . ' ' . escapeshellarg($script) . ' ' . escapeshellarg($jobId)
+        . ' > /dev/null 2>&1 &';
+    exec($cmd);
+}
+
+function cli_php_binary(): string
+{
+    $candidates = [
+        '/usr/bin/php8.4',
+        '/usr/bin/php8.3',
+        '/usr/bin/php8.2',
+        '/usr/bin/php',
+        '/Applications/XAMPP/xamppfiles/bin/php',
+    ];
+    foreach ($candidates as $bin) {
+        if (is_file($bin) && is_executable($bin)) {
+            return $bin;
+        }
+    }
+    $binary = PHP_BINARY ?: 'php';
+    if (stripos($binary, 'fpm') !== false) {
+        return 'php';
+    }
+    return $binary;
+}
+
+function respond_ocr_status(): void
+{
+    $draft = $_SESSION['draft'] ?? null;
+    $jobId = is_array($draft) ? (string) ($draft['ocr_job_id'] ?? '') : '';
+    if ($jobId === '') {
+        json_response(['status' => 'idle', 'reload' => false]);
+    }
+
+    $status = apply_finished_ocr_job($_SESSION['draft']);
+    json_response([
+        'status' => $status,
+        'reload' => $status === 'done',
+    ]);
+}
+
+function apply_finished_ocr_job(array $draft): string
+{
+    $jobId = (string) ($draft['ocr_job_id'] ?? '');
+    if ($jobId === '') {
+        return 'idle';
+    }
+
+    $jobFile = storage_path('tmp/job-' . $jobId . '.json');
+    if (!is_file($jobFile)) {
+        // Job vanished — let the user edit manually.
+        $_SESSION['draft']['ocr_job_id'] = null;
+        $_SESSION['draft']['ocr_status'] = 'done';
+        $_SESSION['draft']['warning'] = 'The photo could not be read automatically. Type the lines below. The photo will still be placed on the PDF.';
+        return 'done';
+    }
+
+    $job = json_decode((string) file_get_contents($jobFile), true);
+    if (!is_array($job)) {
+        return 'running';
+    }
+
+    $status = (string) ($job['status'] ?? 'queued');
+    $_SESSION['draft']['ocr_status'] = $status;
+    if ($status !== 'done') {
+        // Safety: if the worker never starts, stop waiting after 90s.
+        $started = (int) ($job['created_at'] ?? time());
+        if (time() - $started > 90) {
+            $_SESSION['draft']['ocr_job_id'] = null;
+            $_SESSION['draft']['ocr_status'] = 'done';
+            $_SESSION['draft']['parsed'] = ReceiptParser::emptyDraft();
+            $_SESSION['draft']['warning'] = 'Receipt reading took too long. Type the lines below. The photo will still be placed on the PDF.';
+            @unlink($jobFile);
+            return 'done';
+        }
+        return $status === 'queued' ? 'queued' : 'running';
+    }
+
+    $_SESSION['draft']['parsed'] = $job['parsed'] ?? ReceiptParser::emptyDraft();
+    $_SESSION['draft']['warning'] = (string) ($job['warning'] ?? '');
+    $_SESSION['draft']['ocr_job_id'] = null;
+    $_SESSION['draft']['ocr_status'] = 'done';
+    @unlink($jobFile);
+    return 'done';
+}
+
+function json_response(array $payload): void
+{
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Cache-Control: no-store');
+    echo json_encode($payload);
+    exit;
 }
 
 function normalize_upload(string $path, string $mime): string
@@ -499,7 +619,7 @@ function render_upload(): void
             Receipt photo or PDF
             <input type="file" name="receipt" accept=".jpg,.jpeg,.png,.webp,.pdf,.heic,image/*,application/pdf" required>
         </label>
-        <p class="note" id="upload-note" hidden>Reading the receipt… this can take a few seconds.</p>
+        <p class="note" id="upload-note" hidden>Uploading… reading starts in the background.</p>
         <div class="actions">
             <button type="submit" id="upload-btn">Read receipt</button>
         </div>
@@ -509,7 +629,7 @@ function render_upload(): void
         var btn = document.getElementById('upload-btn');
         var note = document.getElementById('upload-note');
         btn.disabled = true;
-        btn.textContent = 'Reading…';
+        btn.textContent = 'Uploading…';
         note.hidden = false;
     });
     </script>
@@ -518,8 +638,9 @@ function render_upload(): void
 
 function render_review(array $draft): void
 {
-    $parsed = $draft['parsed'];
-    $form = $draft['form'];
+    $ocrPending = !empty($draft['ocr_job_id']);
+    $parsed = $draft['parsed'] ?? ReceiptParser::emptyDraft();
+    $form = $draft['form'] ?? null;
     $items = $form['items'] ?? null;
     if ($items === null) {
         $items = [];
@@ -550,6 +671,43 @@ function render_review(array $draft): void
     $gross = $form['gross'] ?? null;
     $vat = $form['vat'] ?? null;
     $net = $form['net'] ?? null;
+    ?>
+    <?php if ($ocrPending): ?>
+        <div class="card" id="ocr-wait">
+            <h2>Reading the receipt…</h2>
+            <p class="note">This runs in the background so the page does not time out. It usually finishes in under a minute.</p>
+            <p class="note" id="ocr-wait-status">Starting…</p>
+            <div class="actions">
+                <a class="button secondary" href="index.php?new=1">Cancel</a>
+            </div>
+        </div>
+        <script>
+        (function () {
+            var statusEl = document.getElementById('ocr-wait-status');
+            var tries = 0;
+            function poll() {
+                tries += 1;
+                statusEl.textContent = 'Still reading… (' + tries + ')';
+                fetch('index.php?ocr_status=1', { credentials: 'same-origin', cache: 'no-store' })
+                    .then(function (r) { return r.json(); })
+                    .then(function (data) {
+                        if (data.reload || data.status === 'done') {
+                            statusEl.textContent = 'Done. Loading…';
+                            window.location.reload();
+                            return;
+                        }
+                        setTimeout(poll, 1500);
+                    })
+                    .catch(function () {
+                        setTimeout(poll, 2000);
+                    });
+            }
+            poll();
+        })();
+        </script>
+        <?php
+        return;
+    endif;
     ?>
     <form method="post" id="protocol-form"
           data-receipt-gross="<?= e($receiptGross) ?>"

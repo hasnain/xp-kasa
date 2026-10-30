@@ -1,0 +1,14 @@
+.DS_Store
+/vendor/
+/storage/uploads/*
+!/storage/uploads/.gitkeep
+/storage/tmp/*
+!/storage/tmp/.gitkeep
+/bin/ocr
+/preview-*.html
+/preview-*.jpg
+*.log
+.env
+.env.*
+!.env.example
+

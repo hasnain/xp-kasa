@@ -77,7 +77,7 @@ class ReceiptParser
         $receiptNr = '';
         $paragonNo = '';
         foreach ($lines as $line) {
-            if (preg_match('/NUMER\s+DOKUMENTU\s*[:.]?\s*(\d{1,8})\b/iu', $line, $match)) {
+            if (preg_match('/NUMER\s+DOKU[A-Z]*ENTU\s*[:.]?\s*(\d{1,8})\b/iu', $line, $match)) {
                 $documentNo = $match[1];
             }
             if (preg_match('/\bnr\s*[:.]?\s*(\d{1,8})\b/iu', $line, $match)) {
@@ -179,30 +179,55 @@ class ReceiptParser
                 $buffer = [];
                 continue;
             }
+            // Failed price-looking lines must not leak into the next product name.
+            if (self::looksLikePriceLine($line)) {
+                continue;
+            }
             $buffer[] = $line;
         }
         return $items;
     }
 
+    private static function looksLikePriceLine(string $line): bool
+    {
+        $line = self::normalizePriceLine($line);
+        if (preg_match('/\d+(?:[.,]\d+)?\s*(?:s?zt\.?|para|kg)?\s*[x×]\s*\d+[.,]\d{2}/iu', $line)) {
+            return true;
+        }
+        if (preg_match('/^[\{\[\(]*(?:\d+)?\s*(?:s?zt\.?|para)\b/iu', $line)
+            && preg_match('/\d+[.,]\d{2}/', $line)) {
+            return true;
+        }
+        return false;
+    }
+
     private static function cleanProductName(string $name): string
     {
+        // Strip header fragments OCR glued onto the first product.
+        $name = preg_replace('/^(?:RODZAJ|NUMER)\s+DOKU[A-Z]*ENTU\s*:?\s*(?:PF|P[EF])?\s*/iu', '', $name);
+        $name = preg_replace('/^NIP\s*:?\s*\d+\s*/iu', '', $name);
         $name = preg_replace('/\b(?:Dostav[ae]|Dostaua)\b/iu', 'Dostawa', $name);
         $name = preg_replace('/\b(?:[Zl]estau|[Zz]estau)\b/iu', 'Zestaw', $name);
         // Copy printouts often truncate "Rękawice" to "Reka."
         $name = preg_replace('/^Reka\.?\s*/iu', 'Rękawice ', $name);
-        // Drop a price fragment that OCR glued onto the product name.
+        $name = preg_replace('/^[fF]?\(?\s*chr\./iu', 'Ochr.', $name);
+        $name = preg_replace('/^Ochr,\s*/iu', 'Ochr. ', $name);
+        // Drop a price fragment that OCR glued onto / into the product name.
+        $name = preg_replace('/^[\{\[\(]*(?:\d+)?\s*(?:s?zt\.?|para)\s*[x×X].*?\d+[.,]\d{2}\s*[A-G0-9]?\s*/iu', '', $name);
         $name = preg_replace('/\s+\d+(?:[.,]\d+)?\s*s?zt\.?\s*[x×X].*$/u', '', $name);
         $name = preg_replace('/\s+\d+(?:[.,]\d+)?\s*para\s*[x×X].*$/iu', '', $name);
         // OCR often turns XP-1701 into X0-1/01 or similar.
         $name = preg_replace('/\bX[O0]-?1\/01\b/iu', 'XP-1701', $name);
         $name = preg_replace('/\bX[O0]-1701\b/iu', 'XP-1701', $name);
         $name = preg_replace('/\bXHRAP\b/iu', 'XWRAP', $name);
+        $name = preg_replace('/\bKHRAP\b/iu', 'XWRAP', $name);
         $name = preg_replace('/\bREO\b/', 'RED', $name);
+        $name = preg_replace('/\bAP-(\d+)/iu', 'XP-$1', $name);
         $name = preg_replace('/\b(\d+)0Z\b/u', '$1OZ', $name);
         $name = preg_replace('/\b(\d+)60Z\b/u', '$16OZ', $name);
         $name = preg_replace('/\b(XP-\d+)-60Z\b/iu', '$1-6OZ', $name);
         $name = preg_replace('/\b(XP-\d+)-602\b/iu', '$1-6OZ', $name);
-        return trim($name);
+        return trim($name, " \t-–:");
     }
 
     private static function matchPrice(string $line): ?array
@@ -257,15 +282,24 @@ class ReceiptParser
     private static function normalizePriceLine(string $line): string
     {
         $line = self::normalize($line);
-        // Strip OCR junk brackets glued to quantity.
-        $line = preg_replace('/^[\{\[\(]+/u', '', $line);
-        $line = preg_replace('/\s+[\{\[\(]+(?=\d|para|szt)/iu', ' ', $line);
+        // Dostawa OCR: "(5zł" → "15zł" (must run before stripping "(").
+        $line = preg_replace('/\((\d)zł/iu', '1$1zł', $line);
+        // Strip OCR junk brackets/slashes/quotes glued to quantity.
+        $line = preg_replace('/^[\{\[\(\\\\\'‘’`]+/u', '', $line);
+        $line = preg_replace('/\s+[\{\[\(\\\\\'‘’`]+(?=para|szt)/iu', ' ', $line);
         // OCR often turns "para" into Cyrillic lookalikes: paгa, рага, etc.
         $line = preg_replace('/\bp[aа][rгp][aа]\b/iu', 'para', $line);
-        // "2para" / bare "para x..." → explicit quantity + unit
+        // "2para" / "Zpara" / bare "para x..." → explicit quantity + unit
+        $line = preg_replace('/\bZpara\b/iu', '2 para', $line);
         $line = preg_replace('/\b(\d+)\s*para\b/iu', '$1 para', $line);
         $line = preg_replace('/^(para)\b/iu', '1 para', $line);
-        // Common OCR mistakes for "1szt."
+        // "'szt," / "‘szt." → "1szt."
+        $line = preg_replace('/[\'‘’`]\s*szt[,.]?/iu', '1szt.', $line);
+        $line = preg_replace('/\bszt,/iu', 'szt.', $line);
+        // Bare "szt. x" after a product name → "1szt. x"
+        $line = preg_replace('/(?<=\s)szt\.?\s*[x×]/iu', '1szt. x', $line);
+        // Common OCR mistakes for "1szt." / "{szt." / "Iszt."
+        $line = preg_replace('/^[\{\[\(]*\s*szt\.?/iu', '1szt.', $line);
         $line = preg_replace('/\b15\s*zt\.?/iu', '1szt.', $line);
         $line = preg_replace('/\b[tlis]\s*szt\.?/iu', '1szt.', $line);
         $line = preg_replace('/\biszt\.?/iu', '1szt.', $line);
@@ -332,10 +366,14 @@ class ReceiptParser
         if (preg_match('/PARAGON|FISKALNY|NIP\b|SUMA|PTU|SPRZED|OPODATK|ROZLICZ|PRZELEW|KIEROWNIK|GOTOW|KARTA/iu', $line)) {
             return true;
         }
-        if (preg_match('/NUMER\s+DOKUMENTU|RODZAJ\s+DOKUMENTU|NUMER\s+KASY|OZNACZENIE\s+KASJERA|DATA\s+I\s+CZAS|PODPIS\s+CYFROWY|NUMER\s+UNIKATOWY|NUMER\s+UNTKATONY|CHRONIONEJ|HYDRUK|WYDRUK|PAMI[EĘ]CI/iu', $line)) {
+        if (preg_match('/NUMER\s+DOKU[A-Z]*ENTU|RODZAJ\s+DOKU[A-Z]*ENTU|NUMER\s+KASY|OZNACZENIE\s+KASJERA|DATA\s+I\s+CZAS|PODPIS\s+CYFROWY|NUMER\s+UNIKATOWY|NUMER\s+UNTKATONY|CHRONIONEJ|HYDRUK|WYDRUK|PAMI[EĘ]CI/iu', $line)) {
             return true;
         }
-        if (preg_match('/SP\.\s*Z\s*O\.O|XPUNCH/iu', $line)) {
+        // Company header only — keep product lines like "XPUNCH Produkt XP-3000".
+        if (preg_match('/SP\.\s*Z\s*O\.O/iu', $line)) {
+            return true;
+        }
+        if (preg_match('/^XPUNCH\b/iu', $line) && !preg_match('/\bProdukt\b|XP-\d+/iu', $line)) {
             return true;
         }
         if (preg_match('/^\d{2}-\d{3}\b/', $line)) {

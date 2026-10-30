@@ -366,8 +366,9 @@ class ReceiptParser
         // "'szt," / "‘szt." → "1szt."
         $line = preg_replace('/[\'‘’`]\s*szt[,.]?/iu', '1szt.', $line);
         $line = preg_replace('/\bszt,/iu', 'szt.', $line);
-        // Bare "szt. x" after a product name → "1szt. x"
-        $line = preg_replace('/(?<=\s)szt\.?\s*[x×]/iu', '1szt. x', $line);
+        // Bare "szt. x" with no quantity digit before it → "1szt. x"
+        // (Do not rewrite "1 szt. x" into "1 1szt. x".)
+        $line = preg_replace('/(?<!\d)\bszt\.?\s*[x×]/iu', '1szt. x', $line);
         // Common OCR mistakes for "1szt." / "{szt." / "Iszt."
         $line = preg_replace('/^[\{\[\(]*\s*szt\.?/iu', '1szt.', $line);
         $line = preg_replace('/\b15\s*zt\.?/iu', '1szt.', $line);
